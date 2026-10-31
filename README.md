@@ -30,3 +30,12 @@ Docker Compose 中。用户登录后，若为当天第一次登录，则
 调用ai生成今日报告。 
 三． 小组成员 
 呼圣山 2601210333
+
+## 项目规范入口
+
+- 常驻总纲：[AGENTS.md](AGENTS.md)。
+- 八类规范与技能：[分类入口](AGENTS.md#分类入口)，正文只在各技能 references/standards.md 维护。
+- 项目技能位于 `.agents/skills/teamproject-*`，按任务加载；可显式调用，例如 `$teamproject-backend`。
+- 技能与总纲提供执行指导，约束还需由测试、CI 和评审落实；当前尚无统一业务门禁，技能格式校验不等于业务验收。
+
+[迁移说明与验证记录](docs/changes/standards-to-skills/record.md)。
