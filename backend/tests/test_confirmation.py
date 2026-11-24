@@ -1,9 +1,35 @@
 """Tests for notification confirmation, idempotency, and todo ops (BE-14, AI-06)."""
 
 import json
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from httpx import AsyncClient
+
+
+def _model_response(text: str):
+    """Deterministic model double for notification extraction (no real LLM)."""
+    valid = {
+        "title": "通知",
+        "content": text,
+        "deadline": None,
+        "items": [
+            {
+                "text": "事项",
+                "date": None,
+                "time": None,
+                "date_expression": None,
+                "source_text": text,
+                "notes": "无",
+            }
+        ],
+    }
+    return {
+        "role": "assistant",
+        "content": json.dumps(valid, ensure_ascii=False),
+        "tool_calls": None,
+        "time_context": None,
+    }
 
 
 async def _register_and_login(client, username):
@@ -37,11 +63,15 @@ async def _create_notification(client, owner_id=None):
         )
         owner_id = me.json()["data"]["user_id"]
 
-    resp = await client.post(
-        "/api/v1/notifications/ingest",
-        json={"text": "周五开会", "owner_id": owner_id},
-        headers={"source": "demo-source", "x-source-token": "demo-secret-change-me"},
-    )
+    with patch(
+        "app.services.agent.loop.chat_completion_with_tools", new_callable=AsyncMock
+    ) as mock_chat:
+        mock_chat.return_value = _model_response("周五开会")
+        resp = await client.post(
+            "/api/v1/notifications/ingest",
+            json={"text": "周五开会", "owner_id": owner_id},
+            headers={"source": "demo-source", "x-source-token": "demo-secret-change-me"},
+        )
     return resp.json()["data"]["id"], owner_id
 
 
@@ -205,3 +235,106 @@ async def test_todo_owner_isolation(client: AsyncClient):
         headers={"Authorization": f"Bearer {token_b}"},
     )
     assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_confirmation_service_branches(db_session):
+    from sqlalchemy.exc import IntegrityError
+
+    from app.core.response import ApiError
+    from app.models.group import GroupRole
+    from app.models.notification import NotificationStatus
+    from app.repositories.group import GroupRepository
+    from app.repositories.notification import NotificationRepository
+    from app.repositories.todo import TodoRepository
+    from app.services.confirmation import ConfirmationService
+
+    notif_repo = NotificationRepository(db_session)
+    todo_repo = TodoRepository(db_session)
+    group_repo = GroupRepository(db_session)
+    svc = ConfirmationService(db_session)
+    candidate = {"title": "do something", "deadline": None}
+
+    # personal notification owned by "owner"
+    notif = await notif_repo.create(
+        owner_id="owner", group_id=None, source="manual", raw_text="hi", parsed="[]"
+    )
+
+    # L40-41: confirm nonexistent notification
+    with pytest.raises(ApiError) as ei:
+        await svc.confirm("nope", "owner", [candidate])
+    assert ei.value.code == "RESOURCE_NOT_FOUND"
+
+    # L48-49: personal notification, other user -> not found
+    with pytest.raises(ApiError) as ei:
+        await svc.confirm(notif.id, "stranger", [candidate])
+    assert ei.value.code == "RESOURCE_NOT_FOUND"
+
+    # L44-47: published group notification, non-member -> not found
+    g = await group_repo.create("g", None, owner_id="admin")
+    g_notif = await notif_repo.create(
+        owner_id="admin", group_id=g.id, source="group", raw_text="g hi", parsed="[]"
+    )
+    g_notif.published = True
+    await db_session.commit()
+    with pytest.raises(ApiError) as ei:
+        await svc.confirm(g_notif.id, "stranger", [candidate])
+    assert ei.value.code == "RESOURCE_NOT_FOUND"
+
+    # L63-64: empty candidates rejected
+    with pytest.raises(ApiError) as ei:
+        await svc.confirm(notif.id, "owner", [])
+    assert ei.value.code == "PARAM_INVALID"
+
+    # L58-60: idempotent re-confirm returns the existing batch
+    batch = await svc.confirm(
+        notif.id, "owner", [candidate, {"title": "two", "deadline": None}]
+    )
+    again = await svc.confirm(
+        notif.id, "owner", [candidate, {"title": "two", "deadline": None}]
+    )
+    assert len(batch) == 2 and len(again) == 2
+    assert {t["id"] for t in batch} == {t["id"] for t in again}
+
+    # L84-89: IntegrityError rollback returns the winning batch.
+    # A concurrent racer inserts the winning todo mid-create (after the top idempotency
+    # check passed) and commits; then our insert raises IntegrityError. The service rolls
+    # back its own partial insert and returns the batch that won the race.
+    notif2 = await notif_repo.create(
+        owner_id="owner", group_id=None, source="manual", raw_text="race", parsed="[]"
+    )
+    winner_prefix = f"notif:{notif2.id}:user:owner"
+    original_create = todo_repo.create
+
+    async def _racing_create(**kwargs):
+        await original_create(
+            owner_id="owner",
+            title="winner",
+            confirmation_key=f"{winner_prefix}:item:0",
+        )
+        await db_session.commit()
+        raise IntegrityError("INSERT INTO todos", {}, Exception("dup key"))
+
+    svc2 = ConfirmationService(db_session)
+    svc2.todo_repo.create = _racing_create
+    result = await svc2.confirm(notif2.id, "owner", [candidate])
+    assert len(result) == 1
+    assert result[0]["title"] == "winner"
+
+    # discard branches
+    with pytest.raises(ApiError) as ei:
+        await svc.discard("nope", "owner")
+    assert ei.value.code == "RESOURCE_NOT_FOUND"
+
+    with pytest.raises(ApiError) as ei:
+        await svc.discard(notif.id, "stranger")
+    assert ei.value.code == "RESOURCE_NOT_FOUND"
+
+    await group_repo.add_member(g.id, "member", GroupRole.MEMBER)
+    with pytest.raises(ApiError) as ei:
+        await svc.discard(g_notif.id, "member")
+    assert ei.value.code == "RESOURCE_NOT_FOUND"
+
+    await svc.discard(notif.id, "owner")
+    refreshed = await notif_repo.get(notif.id)
+    assert refreshed.status == NotificationStatus.DISCARDED

@@ -1,7 +1,47 @@
 """Tests for group sync toggle and notification delivery (SEC-02, BE-14)."""
 
+import json
+from unittest.mock import AsyncMock, patch
+
 import pytest
 from httpx import AsyncClient
+
+
+def _model_response(text: str):
+    """Deterministic model double for notification extraction (no real LLM)."""
+    valid = {
+        "title": "组通知",
+        "content": text,
+        "deadline": None,
+        "items": [
+            {
+                "text": "组会",
+                "date": None,
+                "time": None,
+                "date_expression": None,
+                "source_text": text,
+                "notes": "无",
+            }
+        ],
+    }
+    return {
+        "role": "assistant",
+        "content": json.dumps(valid, ensure_ascii=False),
+        "tool_calls": None,
+        "time_context": None,
+    }
+
+
+async def _publish_group_notification(client, token, gid, text):
+    with patch(
+        "app.services.agent.loop.chat_completion_with_tools", new_callable=AsyncMock
+    ) as mock_chat:
+        mock_chat.return_value = _model_response(text)
+        return await client.post(
+            f"/api/v1/notifications/groups/{gid}/publish",
+            json={"text": text},
+            headers={"Authorization": f"Bearer {token}"},
+        )
 
 
 async def _register_and_login(client, username):
@@ -36,11 +76,7 @@ async def test_sync_default_off(client: AsyncClient):
     )
 
     # A publishes; B has sync OFF → B gets no personal notification
-    await client.post(
-        f"/api/v1/notifications/groups/{gid}/publish",
-        json={"text": "组会通知"},
-        headers={"Authorization": f"Bearer {token_a}"},
-    )
+    await _publish_group_notification(client, token_a, gid, "组会通知")
     b_notifs = await client.get(
         "/api/v1/notifications", headers={"Authorization": f"Bearer {token_b}"}
     )
@@ -67,11 +103,7 @@ async def test_sync_on_delivers_notification(client: AsyncClient):
     )
 
     # A publishes
-    await client.post(
-        f"/api/v1/notifications/groups/{gid}/publish",
-        json={"text": "重要组会"},
-        headers={"Authorization": f"Bearer {token_a}"},
-    )
+    await _publish_group_notification(client, token_a, gid, "重要组会")
 
     # B now has a personal notification
     b_notifs = await client.get(
@@ -101,11 +133,7 @@ async def test_sync_idempotent_no_duplicates(client: AsyncClient):
 
     # Publish same text twice - should not duplicate
     for _ in range(2):
-        await client.post(
-            f"/api/v1/notifications/groups/{gid}/publish",
-            json={"text": "重复测试"},
-            headers={"Authorization": f"Bearer {token_a}"},
-        )
+        await _publish_group_notification(client, token_a, gid, "重复测试")
 
     b_notifs = await client.get(
         "/api/v1/notifications", headers={"Authorization": f"Bearer {token_b}"}

@@ -5,7 +5,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.response import ApiError
-from app.core.security import decode_access_token
+from app.core.security import decode_access_token, decode_access_token_ignore_expiry
 from app.db.session import get_db
 from app.repositories.auth import UserRepository
 
@@ -19,8 +19,15 @@ async def get_current_user(
 ):
     if credentials is None:
         raise ApiError(code="AUTH_INVALID", message="authentication required")
-    payload = decode_access_token(credentials.credentials)
-    if payload is None or payload.get("type") != "access":
+    token = credentials.credentials
+    payload = decode_access_token(token)
+    if payload is None:
+        # Distinguish an expired token from a malformed/tampered one so the
+        # client can refresh instead of forcing a fresh login (SEC-05).
+        if decode_access_token_ignore_expiry(token) is not None:
+            raise ApiError(code="AUTH_EXPIRED", message="token expired")
+        raise ApiError(code="AUTH_INVALID", message="invalid token")
+    if payload.get("type") != "access":
         raise ApiError(code="AUTH_INVALID", message="invalid token")
     user_id = payload.get("sub")
     if not user_id:

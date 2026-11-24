@@ -46,3 +46,21 @@ def decode_access_token(token: str) -> dict | None:
         return jwt.decode(token, settings.secret_key, algorithms=["HS256"])
     except JWTError:
         return None
+
+
+def decode_access_token_ignore_expiry(token: str) -> dict | None:
+    """Decode an access token without checking expiry (still verifies signature).
+
+    Used to distinguish an expired token (returns payload) from a malformed or
+    tampered one (returns None), so callers can report ``AUTH_EXPIRED`` vs
+    ``AUTH_INVALID`` (SEC-05).
+    """
+    try:
+        return jwt.decode(
+            token,
+            settings.secret_key,
+            algorithms=["HS256"],
+            options={"verify_exp": False},
+        )
+    except JWTError:
+        return None

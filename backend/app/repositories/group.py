@@ -2,10 +2,11 @@
 
 import secrets
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.group import Group, GroupMember, GroupRole
+from app.models.user import User
 
 
 class GroupRepository:
@@ -47,19 +48,33 @@ class GroupRepository:
         )
         return result.scalar_one_or_none()
 
-    async def list_for_user(self, user_id: str) -> list[Group]:
+    async def list_for_user(
+        self, user_id: str
+    ) -> list[tuple[Group, GroupMember, int]]:
+        member_count = (
+            select(func.count())
+            .select_from(GroupMember)
+            .where(GroupMember.group_id == Group.id)
+            .correlate(Group)
+            .scalar_subquery()
+        )
         result = await self.db.execute(
-            select(Group)
+            select(Group, GroupMember, member_count)
             .join(GroupMember, GroupMember.group_id == Group.id)
             .where(GroupMember.user_id == user_id)
+            .order_by(Group.created_at.desc())
         )
-        return list(result.scalars().all())
+        return [(g, m, cnt) for g, m, cnt in result.all()]
 
-    async def list_members(self, group_id: str) -> list[GroupMember]:
+    async def list_members(
+        self, group_id: str
+    ) -> list[tuple[GroupMember, User]]:
         result = await self.db.execute(
-            select(GroupMember).where(GroupMember.group_id == group_id)
+            select(GroupMember, User)
+            .join(User, User.id == GroupMember.user_id)
+            .where(GroupMember.group_id == group_id)
         )
-        return list(result.scalars().all())
+        return [(m, u) for m, u in result.all()]
 
     async def add_member(
         self, group_id: str, user_id: str, role: GroupRole = GroupRole.MEMBER

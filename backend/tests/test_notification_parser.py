@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 import pytest
 from httpx import AsyncClient
 
-from app.core.config import settings
+from app.core.response import ApiError
 from app.services.model import ModelError, validate_output
 from app.services.notification_parser import _normalize_deadline, extract_notification
 
@@ -46,11 +46,11 @@ class TestNormalizeDeadline:
         # UTC: 10:00 +08:00 = 02:00 UTC
         assert dt.hour == 2
 
-    def test_iso_no_tz_treated_as_utc(self):
+    def test_model_local_time_uses_business_timezone(self):
         result = _normalize_deadline("2026-06-15T10:00:00")
         assert result is not None
         dt = datetime.fromisoformat(result)
-        assert dt.hour == 10
+        assert dt.hour == 2
 
     def test_date_only(self):
         result = _normalize_deadline("2026-06-15")
@@ -78,14 +78,16 @@ class TestNormalizeDeadline:
 
 
 @pytest.mark.asyncio
-async def test_extract_notification_demo_mode():
-    """Demo mode returns deterministic structured output (AI-08)."""
-    assert settings.is_demo_mode
-    result = await extract_notification("明天下午3点开会")
-    assert "title" in result
-    assert "content" in result
-    assert "items" in result
-    assert isinstance(result["items"], list)
+async def test_extract_notification_raises_when_model_unavailable():
+    """Without a working model, extraction raises an error (no demo fallback)."""
+    from unittest.mock import AsyncMock, patch
+
+    with patch(
+        "app.services.agent.loop.chat_completion_with_tools", new_callable=AsyncMock
+    ) as mock_chat:
+        mock_chat.side_effect = ModelError("LLM 未配置")
+        with pytest.raises(ApiError):
+            await extract_notification("明天下午3点开会")
 
 
 @pytest.mark.asyncio
@@ -109,13 +111,39 @@ async def test_source_auth_invalid_rejected(client: AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_source_ingest_demo_mode(client: AsyncClient):
-    """Valid source can ingest and gets parsed candidates in demo mode."""
-    resp = await client.post(
-        "/api/v1/notifications/ingest",
-        json={"text": "周五提交项目报告", "owner_id": "user-123"},
-        headers={"source": "demo-source", "x-source-token": "demo-secret-change-me"},
-    )
+async def test_source_ingest_with_mocked_model(client: AsyncClient):
+    """Valid source ingests and gets parsed candidates when the model works."""
+    from unittest.mock import AsyncMock, patch
+
+    valid = {
+        "title": "通知",
+        "content": "周五提交项目报告",
+        "deadline": None,
+        "items": [
+            {
+                "text": "提交项目报告",
+                "date": None,
+                "time": None,
+                "date_expression": None,
+                "source_text": "周五提交项目报告",
+                "notes": "无",
+            }
+        ],
+    }
+    with patch(
+        "app.services.agent.loop.chat_completion_with_tools", new_callable=AsyncMock
+    ) as mock_chat:
+        mock_chat.return_value = {
+            "role": "assistant",
+            "content": json.dumps(valid, ensure_ascii=False),
+            "tool_calls": None,
+            "time_context": None,
+        }
+        resp = await client.post(
+            "/api/v1/notifications/ingest",
+            json={"text": "周五提交项目报告", "owner_id": "user-123"},
+            headers={"source": "demo-source", "x-source-token": "demo-secret-change-me"},
+        )
     assert resp.status_code == 200
     body = resp.json()
     assert body["data"]["status"] == "pending"

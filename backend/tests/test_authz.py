@@ -111,3 +111,49 @@ async def test_groups_list_only_returns_user_groups(client: AsyncClient):
     )
     assert resp.status_code == 200
     assert resp.json()["data"] == []
+
+
+@pytest.mark.asyncio
+async def test_authz_service_personal_owner(db_session):
+    from app.core.response import ApiError
+    from app.services.authz import AuthzService
+
+    svc = AuthzService(db_session)
+    await svc.require_personal_owner("u1", "u1")  # owner matches -> no raise
+    with pytest.raises(ApiError) as ei:
+        await svc.require_personal_owner("u1", "u2")
+    assert ei.value.code == "ACCESS_DENIED"
+
+
+@pytest.mark.asyncio
+async def test_authz_service_group_roles(db_session):
+    from app.core.response import ApiError
+    from app.core.security import hash_password
+    from app.models.group import GroupRole
+    from app.models.user import User
+    from app.repositories.group import GroupRepository
+    from app.services.authz import AuthzService
+
+    for uid in ("owner", "admin", "member"):
+        db_session.add(User(id=uid, username=uid, password_hash=hash_password("x")))
+    await db_session.commit()
+
+    repo = GroupRepository(db_session)
+    g = await repo.create("g", None, owner_id="owner")
+    await repo.add_member(g.id, "admin", GroupRole.ADMIN)
+    await repo.add_member(g.id, "member", GroupRole.MEMBER)
+    svc = AuthzService(db_session)
+
+    await svc.require_group_member(g.id, "owner")
+    with pytest.raises(ApiError) as ei:
+        await svc.require_group_member(g.id, "outsider")
+    assert ei.value.code == "ACCESS_DENIED"
+
+    await svc.require_group_admin(g.id, "owner")  # OWNER ok
+    await svc.require_group_admin(g.id, "admin")  # ADMIN ok
+    with pytest.raises(ApiError) as ei:
+        await svc.require_group_admin(g.id, "member")
+    assert ei.value.code == "ACCESS_DENIED"
+    with pytest.raises(ApiError) as ei:
+        await svc.require_group_admin(g.id, "outsider")
+    assert ei.value.code == "ACCESS_DENIED"

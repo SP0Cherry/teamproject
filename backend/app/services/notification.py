@@ -27,7 +27,7 @@ class NotificationService:
             raise ApiError(code="PARAM_INVALID", message="empty notification text")
 
         # Extract structured candidates
-        parsed = await extract_notification(raw_text)
+        parsed = await extract_notification(raw_text, owner_id=owner_id, db=self.db)
         parsed_json = json.dumps(parsed, ensure_ascii=False)
 
         notif = await self.repo.create(
@@ -63,7 +63,7 @@ class NotificationService:
         if membership is None or membership.role.value not in ("owner", "admin"):
             raise ApiError(code="ACCESS_DENIED", message="only admins can publish")
 
-        parsed = await extract_notification(raw_text)
+        parsed = await extract_notification(raw_text, owner_id=publisher_id, db=self.db)
         parsed_json = json.dumps(parsed, ensure_ascii=False)
         notif = await self.repo.create(
             owner_id=publisher_id,

@@ -51,7 +51,17 @@ async def list_groups(
     service = GroupService(db)
     groups = await service.list_for_user(current_user.id)
     return success_response(
-        data=[{"id": g.id, "name": g.name} for g in groups],
+        data=[
+            {
+                "id": g.id,
+                "name": g.name,
+                "description": g.description,
+                "my_role": m.role.value,
+                "my_sync_enabled": m.sync_enabled,
+                "member_count": cnt,
+            }
+            for g, m, cnt in groups
+        ],
         request_id=request.state.request_id,
     )
 
@@ -64,13 +74,15 @@ async def get_group(
     db: AsyncSession = Depends(get_db),
 ):
     service = GroupService(db)
-    group = await service.get(group_id, current_user.id)
+    group, membership = await service.get(group_id, current_user.id)
     return success_response(
         data={
             "id": group.id,
             "name": group.name,
             "description": group.description,
             "invite_token": group.invite_token,
+            "my_role": membership.role.value if membership else None,
+            "my_sync_enabled": membership.sync_enabled if membership else False,
         },
         request_id=request.state.request_id,
     )
@@ -130,7 +142,15 @@ async def list_members(
     service = GroupService(db)
     members = await service.list_members(group_id, current_user.id)
     return success_response(
-        data=[{"user_id": m.user_id, "role": m.role.value} for m in members],
+        data=[
+            {
+                "user_id": m.user_id,
+                "username": u.username,
+                "role": m.role.value,
+                "joined_at": m.created_at.isoformat() if m.created_at else None,
+            }
+            for m, u in members
+        ],
         request_id=request.state.request_id,
     )
 

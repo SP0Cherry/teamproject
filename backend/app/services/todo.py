@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.response import ApiError
 from app.models.todo import TodoStatus
+from app.services.date_context import validate_candidate
 from app.repositories.todo import TodoRepository
 
 
@@ -42,28 +43,7 @@ class TodoService:
         if not candidates:
             raise ApiError(code="PARAM_INVALID", message="no candidates")
 
-        created = []
-        for item in candidates:
-            title = str(item.get("title", "")).strip()
-            if not title:
-                raise ApiError(code="PARAM_INVALID", message="candidate missing title")
-            due_at = None
-            due = item.get("due_at")
-            if due:
-                try:
-                    due_at = datetime.fromisoformat(due)
-                    if due_at.tzinfo is None:
-                        from datetime import timezone
-                        due_at = due_at.replace(tzinfo=timezone.utc)
-                except (ValueError, TypeError):
-                    due_at = None
-            todo = await self.repo.create(
-                owner_id=user_id,
-                title=title,
-                description=item.get("notes"),
-                location=item.get("location"),
-                due_at=due_at,
-            )
-            created.append(todo)
+        validated = [validate_candidate(item, i + 1) for i, item in enumerate(candidates)]
+        created = [await self.repo.create(owner_id=user_id, **item) for item in validated]
         await self.repo.db.commit()
         return created

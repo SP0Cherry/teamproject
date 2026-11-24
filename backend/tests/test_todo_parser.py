@@ -1,4 +1,8 @@
-"""Tests for todo parsing: multi-item, field null, LLM fallback, rule fallback (AI-06, AI-05)."""
+"""Tests for todo parsing: field validation, LLM success, and error handling (AI-06, AI-05).
+
+Parsing always calls the LLM agent. LLM unavailability or unparseable output
+raises ParseError — there is no rule-based fallback.
+"""
 
 import json
 from unittest.mock import patch, AsyncMock
@@ -6,61 +10,7 @@ from unittest.mock import patch, AsyncMock
 import pytest
 
 from app.services.model import ModelError, validate_output
-from app.services.todo_parser import (
-    TODO_SCHEMA,
-    _demo_parse,
-    _has_multiple_segments,
-    parse_todos,
-)
-
-
-class TestDemoParseMultiItem:
-    """Rule-based parser handles multi-item Chinese text."""
-
-    def test_chinese_multi_item(self):
-        text = "明天上午十点开会，下午三点交报告，晚上八点和朋友吃饭"
-        todos = _demo_parse(text)
-        titles = [t["title"] for t in todos]
-        assert len(todos) >= 3
-        assert any("开会" in t for t in titles)
-        assert any("报告" in t for t in titles)
-        assert any("吃饭" in t for t in titles)
-
-    def test_today_tomorrow(self):
-        text = "今天开会，明天交报告"
-        todos = _demo_parse(text)
-        assert len(todos) == 2
-
-    def test_single_item(self):
-        todos = _demo_parse("买牛奶")
-        assert len(todos) == 1
-        assert todos[0]["title"] == "买牛奶"
-
-
-class TestDemoParseFields:
-    """Field extraction: missing fields are None, not dropped."""
-
-    def test_time_chinese_numeral(self):
-        todos = _demo_parse("下午三点开会")
-        assert todos[0]["time"] == "15:00"
-
-    def test_location(self):
-        todos = _demo_parse("在会议室A开会")
-        assert todos[0]["location"] == "会议室A"
-
-    def test_missing_fields_are_none(self):
-        todos = _demo_parse("买牛奶")
-        assert todos[0]["date"] is None
-        assert todos[0]["time"] is None
-        assert todos[0]["location"] is None
-
-
-class TestHasMultipleSegments:
-    def test_multi_segment(self):
-        assert _has_multiple_segments("明天开会，后天交报告") is True
-
-    def test_single_segment(self):
-        assert _has_multiple_segments("买牛奶") is False
+from app.services.todo_parser import ParseError, TODO_SCHEMA, parse_todos
 
 
 class TestValidateOutputItems:
@@ -90,38 +40,8 @@ class TestValidateOutputItems:
 
 
 @pytest.mark.asyncio
-class TestParseTodosFallback:
-    """LLM failure falls back to rule parsing (AI-05)."""
-
-    async def test_llm_model_error_falls_back(self):
-        with patch("app.services.todo_parser.chat_completion", new_callable=AsyncMock) as mock_chat:
-            mock_chat.side_effect = ModelError("timeout")
-            result = await parse_todos(
-                "明天开会，后天交报告",
-                llm_config={"api_key": "k", "base_url": "http://x", "model": "m"},
-            )
-            assert result["parser"] == "rule"
-            assert len(result["candidates"]) >= 2
-
-    async def test_llm_invalid_json_falls_back(self):
-        with patch("app.services.todo_parser.chat_completion", new_callable=AsyncMock) as mock_chat:
-            mock_chat.return_value = "not json at all"
-            result = await parse_todos(
-                "明天开会",
-                llm_config={"api_key": "k", "base_url": "http://x", "model": "m"},
-            )
-            assert result["parser"] == "rule"
-            assert len(result["candidates"]) >= 1
-
-    async def test_llm_empty_todos_falls_back_for_multi_segment(self):
-        with patch("app.services.todo_parser.chat_completion", new_callable=AsyncMock) as mock_chat:
-            mock_chat.return_value = json.dumps({"todos": []})
-            result = await parse_todos(
-                "明天开会，后天交报告",
-                llm_config={"api_key": "k", "base_url": "http://x", "model": "m"},
-            )
-            assert result["parser"] == "rule"
-            assert len(result["candidates"]) >= 2
+class TestParseTodosLLM:
+    """Parsing always calls the LLM; failures raise ParseError (no fallback)."""
 
     async def test_llm_success_uses_llm(self):
         with patch("app.services.todo_parser.chat_completion", new_callable=AsyncMock) as mock_chat:
@@ -133,14 +53,42 @@ class TestParseTodosFallback:
                 llm_config={"api_key": "k", "base_url": "http://x", "model": "m"},
             )
             assert result["parser"] == "llm"
+            assert result["degraded_reason"] is None
             assert len(result["candidates"]) == 1
+
+    async def test_llm_model_error_raises(self):
+        with patch("app.services.todo_parser.chat_completion", new_callable=AsyncMock) as mock_chat:
+            mock_chat.side_effect = ModelError("timeout")
+            with pytest.raises(ParseError):
+                await parse_todos(
+                    "明天开会，后天交报告",
+                    llm_config={"api_key": "k", "base_url": "http://x", "model": "m"},
+                )
+
+    async def test_llm_invalid_json_raises(self):
+        with patch("app.services.todo_parser.chat_completion", new_callable=AsyncMock) as mock_chat:
+            mock_chat.return_value = "not json at all"
+            with pytest.raises(ParseError):
+                await parse_todos(
+                    "明天开会",
+                    llm_config={"api_key": "k", "base_url": "http://x", "model": "m"},
+                )
+
+    async def test_llm_empty_todos_returns_empty_no_fallback(self):
+        with patch("app.services.todo_parser.chat_completion", new_callable=AsyncMock) as mock_chat:
+            mock_chat.return_value = json.dumps({"todos": []})
+            result = await parse_todos(
+                "明天开会，后天交报告",
+                llm_config={"api_key": "k", "base_url": "http://x", "model": "m"},
+            )
+            assert result["parser"] == "llm"
+            assert result["candidates"] == []
 
 
 @pytest.mark.asyncio
-class TestParseTodosDemoMode:
-    """Demo mode (no LLM config) uses rule parser directly."""
+class TestParseTodosNoLLMConfig:
+    """Without LLM config, parsing raises ParseError (no demo/rule fallback)."""
 
-    async def test_demo_mode_multi_item(self):
-        result = await parse_todos("今天开会，明天交报告，后天复习")
-        assert result["parser"] == "rule"
-        assert len(result["candidates"]) >= 3
+    async def test_no_llm_config_raises(self):
+        with pytest.raises(ParseError):
+            await parse_todos("今天开会，明天交报告")

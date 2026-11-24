@@ -1,5 +1,7 @@
 """Task breakdown suggestion service (AI-06: manual confirmation required)."""
 
+import json
+
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.response import ApiError
@@ -44,15 +46,7 @@ class BreakdownService:
         )
 
         raw = await chat_completion(prompt)
-        if isinstance(raw, dict) and raw.get("demo"):
-            # Demo mode: return canned subtasks
-            return [
-                {"title": f"{todo.title} - 步骤1", "description": "先做准备工作"},
-                {"title": f"{todo.title} - 步骤2", "description": "执行核心任务"},
-                {"title": f"{todo.title} - 步骤3", "description": "检查和收尾"},
-            ]
-
-        parsed = validate_output(raw, BREAKDOWN_SCHEMA)
+        parsed = validate_output(json.loads(raw), BREAKDOWN_SCHEMA)
         return parsed["subtasks"]
 
     async def confirm_subtasks(

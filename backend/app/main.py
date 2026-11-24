@@ -8,6 +8,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from app.api.v1.router import api_router
 from app.core.logging import bind_request_id, configure_logging, get_logger
 from app.core.response import ApiError, error_response, success_response
+from app.services.model import ModelError
 
 logger = get_logger("app")
 
@@ -16,6 +17,8 @@ logger = get_logger("app")
 async def lifespan(app: FastAPI):
     configure_logging()
     logger.info("app_startup")
+    # Tool servers are resolved per-request over HTTP (Task 6); no persistent
+    # MCP subprocess to start or stop.
     yield
     logger.info("app_shutdown")
 
@@ -52,6 +55,17 @@ async def api_error_handler(request: Request, exc: ApiError):
         message=exc.message,
         data=exc.data,
         status=exc.status,
+        request_id=getattr(request.state, "request_id", ""),
+    )
+
+
+@app.exception_handler(ModelError)
+async def model_error_handler(request: Request, exc: ModelError):
+    logger.warning("model_error", error=str(exc))
+    return error_response(
+        code="DEPENDENCY_UNAVAILABLE",
+        message=str(exc) or "LLM 调用失败",
+        status=503,
         request_id=getattr(request.state, "request_id", ""),
     )
 

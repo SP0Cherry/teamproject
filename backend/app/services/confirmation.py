@@ -7,11 +7,13 @@ notification produces only one batch of todos, identified by a confirmation_key.
 import hashlib
 from datetime import datetime
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.response import ApiError
 from app.models.notification import NotificationStatus
 from app.models.todo import TodoStatus
+from app.services.date_context import validate_candidate, serialize_todo
 from app.repositories.group import GroupRepository
 from app.repositories.notification import NotificationRepository
 from app.repositories.todo import TodoRepository
@@ -46,55 +48,47 @@ class ConfirmationService:
             else:
                 raise ApiError(code="RESOURCE_NOT_FOUND", message="not found")
 
-        # Idempotency key: per-user for group notifications (each member confirms independently)
-        confirmation_key = f"notif:{notification_id}:user:{user_id}"
+        # Batch prefix shared by every item in this confirmation. Per-item keys append
+        # ":item:{index}" so items in the same batch don't collide, while a replayed
+        # batch reproduces identical keys and is blocked by the unique index on the
+        # column (concurrency-safe idempotency).
+        batch_prefix = f"notif:{notification_id}:user:{user_id}"
 
         # If already confirmed, return existing todos (idempotency)
-        existing = await self.todo_repo.list_by_confirmation_key(confirmation_key)
+        existing = await self.todo_repo.list_by_confirmation_batch(batch_prefix)
         if existing:
-            return [
-                {"id": t.id, "title": t.title, "status": t.status.value}
-                for t in existing
-            ]
+            return [serialize_todo(t) for t in existing]
 
         # Validate candidates
         if not candidates:
             raise ApiError(code="PARAM_INVALID", message="no candidates to confirm")
 
-        created = []
-        for item in candidates:
-            title = item.get("title") or item.get("text")
-            if not title or not str(title).strip():
-                raise ApiError(
-                    code="PARAM_INVALID", message="candidate missing title"
+        validated = [validate_candidate(item, i + 1) for i, item in enumerate(candidates)]
+        try:
+            created = []
+            for i, item in enumerate(validated):
+                todo = await self.todo_repo.create(
+                    owner_id=user_id,
+                    group_id=notif.group_id,
+                    source_notification_id=notification_id,
+                    confirmation_key=f"{batch_prefix}:item:{i}",
+                    **item,
                 )
-            due_at = None
-            deadline = item.get("deadline")
-            if deadline:
-                try:
-                    due_at = datetime.fromisoformat(deadline)
-                except (ValueError, TypeError):
-                    due_at = None
-            todo = await self.todo_repo.create(
-                owner_id=user_id,
-                title=str(title).strip(),
-                description=item.get("description"),
-                due_at=due_at,
-                group_id=notif.group_id,
-                source_notification_id=notification_id,
-                confirmation_key=confirmation_key,
+                created.append(todo)
+
+            # Mark notification as confirmed
+            await self.notif_repo.update_status(
+                notification_id, NotificationStatus.CONFIRMED
             )
-            created.append(todo)
+            await self.db.commit()
+        except IntegrityError:
+            # Lost a concurrent confirmation race: roll back our partial inserts and
+            # return the batch that won the race (no duplicate data, no error to caller).
+            await self.db.rollback()
+            existing = await self.todo_repo.list_by_confirmation_batch(batch_prefix)
+            return [serialize_todo(t) for t in existing]
 
-        # Mark notification as confirmed
-        await self.notif_repo.update_status(
-            notification_id, NotificationStatus.CONFIRMED
-        )
-        await self.db.commit()
-
-        return [
-            {"id": t.id, "title": t.title, "status": t.status.value} for t in created
-        ]
+        return [serialize_todo(t) for t in created]
 
     async def discard(self, notification_id: str, user_id: str) -> None:
         notif = await self.notif_repo.get(notification_id)

@@ -29,6 +29,11 @@ def test_upload_dir(tmp_path):
     return str(d)
 
 
+@pytest.fixture(autouse=True)
+def isolate_upload_storage(monkeypatch, test_upload_dir):
+    monkeypatch.setattr(settings, 'upload_dir', test_upload_dir)
+
+
 @pytest.fixture
 def controllable_clock():
     """Injectable clock for time-dependent tests (TEST-05)."""

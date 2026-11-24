@@ -18,7 +18,9 @@ class GroupService:
 
     async def get(self, group_id: str, user_id: str):
         await self.authz.require_group_member(group_id, user_id)
-        return await self.repo.get(group_id)
+        group = await self.repo.get(group_id)
+        membership = await self.repo.get_membership(group_id, user_id)
+        return group, membership
 
     async def list_for_user(self, user_id: str):
         return await self.repo.list_for_user(user_id)

@@ -15,6 +15,7 @@ from app.models.user import User
 from app.services.confirmation import ConfirmationService
 from app.services.extractor import ALLOWED_MIME_TYPES, extract_text
 from app.services.todo import TodoService
+from app.services.date_context import serialize_todo
 from app.services.todo_parser import parse_todos
 
 router = APIRouter(tags=["todos"])
@@ -50,7 +51,7 @@ async def parse_todos_from_text(
     llm_cfg = body.llm_config.model_dump() if body.llm_config else None
     result = await parse_todos(body.text, llm_config=llm_cfg)
     return success_response(
-        data={"candidates": result["candidates"], "parser": result["parser"]},
+        data=result,
         request_id=request.state.request_id,
     )
 
@@ -91,8 +92,7 @@ async def parse_todos_from_file(
     result = await parse_todos(text, llm_config=llm_cfg)
     return success_response(
         data={
-            "candidates": result["candidates"],
-            "parser": result["parser"],
+            **result,
             "extracted_text": text[:2000],
         },
         request_id=request.state.request_id,
@@ -110,17 +110,7 @@ async def batch_create_todos(
     service = TodoService(db)
     created = await service.batch_create(current_user.id, body.todos)
     return success_response(
-        data=[
-            {
-                "id": t.id,
-                "title": t.title,
-                "description": t.description,
-                "location": t.location,
-                "due_at": t.due_at.isoformat() if t.due_at else None,
-                "status": t.status.value,
-            }
-            for t in created
-        ],
+        data=[serialize_todo(t) for t in created],
         message="created",
         request_id=request.state.request_id,
     )
@@ -135,17 +125,7 @@ async def list_todos(
     service = TodoService(db)
     todos = await service.list(current_user.id)
     return success_response(
-        data=[
-            {
-                "id": t.id,
-                "title": t.title,
-                "description": t.description,
-                "location": t.location,
-                "due_at": t.due_at.isoformat() if t.due_at else None,
-                "status": t.status.value,
-            }
-            for t in todos
-        ],
+        data=[serialize_todo(t) for t in todos],
         request_id=request.state.request_id,
     )
 
@@ -160,14 +140,7 @@ async def get_todo(
     service = TodoService(db)
     todo = await service.get(todo_id, current_user.id)
     return success_response(
-        data={
-            "id": todo.id,
-            "title": todo.title,
-            "description": todo.description,
-            "location": todo.location,
-            "due_at": todo.due_at.isoformat() if todo.due_at else None,
-            "status": todo.status.value,
-        },
+        data=serialize_todo(todo),
         request_id=request.state.request_id,
     )
 
