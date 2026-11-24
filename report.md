@@ -71,6 +71,8 @@
 
 `reports/review-02.md` 记录两处由红转绿：并发幂等（`got 16` 退出 1 → 硬化后 `1 passed` 退出 0，含变异复红）与依赖漏洞（141 条退出 2 → 升级 + 例外登记后退出 0）。
 
+CI 侧另有一次真实拦截：首次推送（`2ff364e`）`make check` 退出 2 被挡下，修复后（`3b4b2b2`）`make check` 与 `make check-security` 均退出 0。两次运行链接、根因与修复见 `reports/gate-blocked.md`。
+
 ### 演示视频
 
 `<!-- TODO -->`：依次展示 `make check`、`make check-security` 全绿，再演示核心功能（通知解析 → 人工确认 → 待办），≤3 分钟，链接填入头部。
