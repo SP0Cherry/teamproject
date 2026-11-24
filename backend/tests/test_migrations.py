@@ -6,12 +6,22 @@ from pathlib import Path
 
 from alembic import command
 from alembic.config import Config
-from embedded_postgres import PostgresServer
+
+try:  # Optional local verification dependency; absent in CI install set.
+    from embedded_postgres import PostgresServer
+except ImportError:
+    PostgresServer = None
+
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import IntegrityError
 
 
 def main():
+    if PostgresServer is None:
+        raise RuntimeError(
+            "embedded-postgres is required for migration checks: "
+            "pip install embedded-postgres==18.6.3"
+        )
     with tempfile.TemporaryDirectory() as data_dir:
         pg = PostgresServer(Path(data_dir))
         pg.ensure_pgdata_inited()
