@@ -17,6 +17,19 @@ services:
       timeout: 5s
       retries: 10
 
+  mcp-server:
+    build:
+      context: ./mcp-server
+      dockerfile: Dockerfile
+    container_name: pa_mcp_server
+    restart: unless-stopped
+    env_file: .env
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8090/health')"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
   api:
     build:
       context: ./backend
@@ -34,6 +47,7 @@ services:
     volumes:
       - uploads:/data/uploads
       - ./backend/app:/app/app
+      - ./backend/alembic:/app/alembic
       - ./backend/migrations:/app/migrations
     command: >
       sh -c "alembic upgrade head &&

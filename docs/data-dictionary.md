@@ -172,16 +172,19 @@
 | title | VARCHAR(255) | 否 | - | 事件名称 | 内部 |
 | description | TEXT | 是 | NULL | 注意事项 | 内部 |
 | location | VARCHAR(512) | 是 | NULL | 地点 | 内部 |
-| due_at | TIMESTAMPTZ | 是 | NULL | 截止时间（UTC）；仅日期存当日 00:00 UTC | 内部 |
+| due_at | TIMESTAMPTZ | 是 | NULL | 精确截止时刻（UTC）；仅日期时为空 | 内部 |
+| due_date | DATE | 是 | NULL | 仅截止日期，不做 UTC 换算 | 内部 |
+| due_precision | VARCHAR(16) | 否 | 按时间字段推导 | datetime/date/unknown，与时间字段互斥约束一致 | 内部 |
+| due_timezone | VARCHAR(64) | 否 | 业务时区 | IANA 时区，默认 Asia/Shanghai | 内部 |
 | status | todo_status 枚举 | 否 | pending | pending/done | 内部 |
 | source_notification_id | VARCHAR(36) | 是 | NULL | 来源通知 | 内部 |
-| confirmation_key | VARCHAR(64) | 是 | NULL | 确认批次幂等键 | 内部 |
+| confirmation_key | VARCHAR(64) | 是 | NULL | 确认幂等键（逐事项唯一，格式 `notif:{notification_id}:user:{user_id}:item:{index}`；可空，NULL 不冲突） | 内部 |
 | created_at | TIMESTAMPTZ | 否 | now() | 创建时间（UTC） | 内部 |
 | updated_at | TIMESTAMPTZ | 否 | now() | 更新时间（UTC） | 内部 |
 
-**索引**：`ix_todos_owner_id`、`ix_todos_group_id`、`ix_todos_status`、`ix_todos_due_at`、`ix_todos_confirmation_key`。
+**索引**：`ix_todos_owner_id`、`ix_todos_group_id`、`ix_todos_status`、`ix_todos_due_at`、`uq_todos_confirmation_key`（唯一，见迁移 `0017_todo_confirmation_key_unique`）。
 
-**幂等**：同一通知的重复确认通过 `confirmation_key` 去重，最多产生一批待办（BE-14）。
+**幂等**：同一通知的重复确认通过 `confirmation_key` 逐事项唯一键去重，最多产生一批待办；并发重放由唯一索引挡住，冲突时回退返回胜方批次（BE-14）。
 
 ## 表：resource_chunks
 
@@ -222,6 +225,70 @@
 
 **索引**：`ix_reminders_user_id`、`ix_reminders_status`、`ix_reminders_remind_at`。
 
+## 表：tool_servers
+
+用户登记的外部工具服务器（MCP over HTTP）。第三方服务器令牌对称加密后存于 `token_cipher`，接口响应只回 `has_token`，不回明文（SEC-07）。
+
+| 字段 | 类型 | 空值 | 默认 | 说明 | 敏感等级 |
+| --- | --- | --- | --- | --- | --- |
+| id | VARCHAR(36) | 否 | uuid | 服务器标识 | 内部 |
+| owner_id | VARCHAR(36) | 否 | - | 归属用户，归属字段 | 内部 |
+| name | VARCHAR(128) | 否 | - | 服务器名称 | 内部 |
+| base_url | VARCHAR(512) | 否 | - | 服务器根地址 | 内部 |
+| token_cipher | TEXT | 是 | NULL | 令牌密文（对称加密） | 内部 |
+| has_token | BOOLEAN | 否 | false | 是否已配置令牌 | 内部 |
+| status | _tool_servers_status 枚举 | 否 | unconnected | unconnected/connected/error | 内部 |
+| discovered_tools | TEXT | 是 | NULL | 发现的工具定义（JSON） | 内部 |
+| last_error | TEXT | 是 | NULL | 最近错误摘要 | 内部 |
+| created_at | TIMESTAMPTZ | 否 | now() | 创建时间（UTC） | 内部 |
+| updated_at | TIMESTAMPTZ | 否 | now() | 更新时间（UTC） | 内部 |
+
+**索引**：`ix_tool_servers_owner_id`、`ix_tool_servers_status`。
+
+**状态流转**：登记 → unconnected；连接成功 → connected（覆盖 discovered_tools）；任意失败 → error + last_error；断开 → unconnected 并清空 discovered_tools。
+
+## 表：skills
+
+技能配置：在某能力场景（问答 / 通知抽取）下绑定若干 `tool@server` 引用。保存前校验引用格式、服务器归属与连接状态、工具存在性（AI-09）。
+
+| 字段 | 类型 | 空值 | 默认 | 说明 | 敏感等级 |
+| --- | --- | --- | --- | --- | --- |
+| id | VARCHAR(36) | 否 | uuid | 技能标识 | 内部 |
+| owner_id | VARCHAR(36) | 否 | - | 归属用户，归属字段 | 内部 |
+| name | VARCHAR(128) | 否 | - | 技能名称 | 内部 |
+| capability | _skills_capability 枚举 | 否 | - | qa / notification_extraction | 内部 |
+| tool_refs | TEXT | 是 | NULL | `tool@server` 引用列表（JSON 数组） | 内部 |
+| version | INTEGER | 否 | 1 | 乐观锁版本号（BE-11） | 内部 |
+| created_at | TIMESTAMPTZ | 否 | now() | 创建时间（UTC） | 内部 |
+| updated_at | TIMESTAMPTZ | 否 | now() | 更新时间（UTC） | 内部 |
+
+**索引**：`ix_skills_owner_id`、`ix_skills_capability`。
+
+## 表：tool_call_records
+
+工具调用记录（只增不改）。仅留存元数据，不含调用参数与结果正文（DATA-04）。服务器在调用时已删除/重命名则不写记录。
+
+| 字段 | 类型 | 空值 | 默认 | 说明 | 敏感等级 |
+| --- | --- | --- | --- | --- | --- |
+| id | VARCHAR(36) | 否 | uuid | 记录标识 | 内部 |
+| owner_id | VARCHAR(36) | 否 | - | 归属用户，归属字段 | 内部 |
+| tool_name | VARCHAR(128) | 否 | - | 工具名 | 内部 |
+| server_name | VARCHAR(128) | 是 | NULL | 调用时的服务器名快照 | 内部 |
+| server_id | VARCHAR(36) | 是 | NULL | 服务器标识（删除后可空） | 内部 |
+| result | _tool_call_records_result 枚举 | 否 | - | success/rejected/error | 内部 |
+| conversation_id | VARCHAR(64) | 是 | NULL | 关联会话 | 内部 |
+| round_index | INTEGER | 是 | NULL | 对话轮次 | 内部 |
+| triggered_by | VARCHAR(36) | 否 | - | 触发用户 | 内部 |
+| duration_ms | INTEGER | 是 | NULL | 耗时（毫秒） | 内部 |
+| created_at | TIMESTAMPTZ | 否 | now() | 创建时间（UTC） | 内部 |
+| updated_at | TIMESTAMPTZ | 否 | now() | 更新时间（UTC） | 内部 |
+
+**索引**：`ix_tool_call_records_owner_id`、`ix_tool_call_records_result`。
+
 ## 扩展：vector
 
 PostgreSQL pgvector 扩展，用于向量检索。向量元数据（文件标识、归属、内容/索引版本、切片序号）随资料索引能力登记，向量副本不作为授权真相（DATA-02）。
+
+### 待办时间迁移兼容性
+
+0015 迁移为省略 due_precision 的旧 INSERT 通过数据库触发器按 due_at/due_date 推导精度；显式不一致的精度仍由约束拒绝。历史 due_at 不变。仅日期记录存在时结构降级会拒绝；应用回退保留新增列。
