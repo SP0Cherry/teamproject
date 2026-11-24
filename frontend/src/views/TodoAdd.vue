@@ -36,6 +36,13 @@
           <label>事件 *</label>
           <input v-model="c.title" class="input" />
         </div>
+        <p v-if="c.source_text">原文：{{ c.source_text }}</p>
+        <div v-if="c.date_basis && c.date_expression">
+          <label>{{ c.date_basis.source === 'source_text' ? '原文日期基准' : '按解析请求发送当天推算，待确认' }}（{{ c.date_basis.timezone }}）</label>
+          <input type="date" v-model="c.date_basis.date" @change="updateBasis(i)" />
+        </div>
+        <p v-if="c.warnings?.length">{{ c.warnings.join('；') }}</p>
+        <label v-if="c.time && !c.date"><input type="checkbox" v-model="c.accept_no_deadline" />接受无截止日期，保留原文时间</label>
         <div class="field-row">
           <div class="field">
             <label>日期</label>
@@ -52,7 +59,6 @@
               v-model="c.time"
               type="time"
               class="input"
-              @change="updateDueAt(i)"
             />
           </div>
         </div>
@@ -81,6 +87,7 @@
 
 <script setup lang="ts">
 import { ref } from "vue";
+import { editableTime, timePayload, rebaseCandidates } from "../utils/time.mjs";
 import { useRouter } from "vue-router";
 import { parseTodosFromText, parseTodosFromFile, batchCreateTodos, TodoCandidate } from "../api/todos";
 import { ApiError } from "../api/client";
@@ -97,35 +104,19 @@ const savedCount = ref(0);
 interface EditableCandidate extends TodoCandidate {
   date?: string;
   time?: string;
+  date_manually_edited?: boolean;
+  accept_no_deadline?: boolean;
 }
 
 const candidates = ref<EditableCandidate[]>([]);
 const parserUsed = ref<"llm" | "rule" | null>(null);
 
-function splitDueAt(dueAt: string | null): { date: string; time: string } {
-  if (!dueAt) return { date: "", time: "" };
-  try {
-    const d = new Date(dueAt);
-    // Use UTC components to match backend storage (no timezone offset)
-    const date = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`;
-    const time = `${String(d.getUTCHours()).padStart(2, "0")}:${String(d.getUTCMinutes()).padStart(2, "0")}`;
-    return { date, time };
-  } catch {
-    return { date: "", time: "" };
-  }
-}
-
-function combineDateTime(date: string, time: string): string | null {
-  if (!date) return null;
-  const t = time || "09:00";
-  // Store as UTC to match backend expectations
-  const dt = new Date(`${date}T${t}:00Z`);
-  return dt.toISOString();
-}
-
 function updateDueAt(i: number) {
-  const c = candidates.value[i];
-  c.due_at = combineDateTime(c.date || "", c.time || "");
+  candidates.value[i].date_manually_edited = true;
+}
+
+function updateBasis(i: number) {
+  rebaseCandidates(candidates.value, i);
 }
 
 async function parseText() {
@@ -141,9 +132,9 @@ async function parseText() {
       : undefined;
     const res = await parseTodosFromText(textInput.value, llmConfig);
     parserUsed.value = res.data?.parser || null;
+    error.value = res.data?.degraded_reason || "";
     candidates.value = (res.data?.candidates || []).map((c) => {
-      const { date, time } = splitDueAt(c.due_at);
-      return { ...c, date, time };
+      return editableTime(c);
     });
     if (candidates.value.length === 0) {
       error.value = "未能解析出待办事项，请尝试更明确的描述";
@@ -171,9 +162,9 @@ async function onFileChange(e: Event) {
       : undefined;
     const res = await parseTodosFromFile(file, llmConfig);
     parserUsed.value = res.data?.parser || null;
+    error.value = res.data?.degraded_reason || "";
     candidates.value = (res.data?.candidates || []).map((c) => {
-      const { date, time } = splitDueAt(c.due_at);
-      return { ...c, date, time };
+      return editableTime(c);
     });
   } catch (e) {
     error.value = e instanceof ApiError ? e.message : "文件解析失败";
@@ -200,12 +191,7 @@ async function confirm() {
   saving.value = true;
   error.value = "";
   try {
-    const payload = valid.map((c) => ({
-      title: c.title,
-      due_at: c.due_at,
-      location: c.location || null,
-      notes: c.notes || null,
-    }));
+    const payload = valid.map(timePayload);
     const res = await batchCreateTodos(payload);
     savedCount.value = res.data?.length || 0;
     setTimeout(() => router.push("/schedule"), 1000);

@@ -2,8 +2,9 @@ FROM node:20-slim
 
 WORKDIR /app
 
-COPY package.json ./
-RUN npm install
+COPY package.json package-lock.json ./
+COPY scripts/ ./scripts/
+RUN npm ci
 
 COPY . .
 

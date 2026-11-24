@@ -7,6 +7,16 @@
         {{ loading ? "思考中..." : "提问" }}
       </button>
     </div>
+
+    <div class="tool-calls" v-if="toolCalls.length">
+      <h4>工具调用</h4>
+      <div class="tool-row" v-for="(t, i) in toolCalls" :key="i">
+        <span class="tool-name">{{ t.tool }}</span>
+        <span class="tool-status" :class="t.status">{{ statusLabel(t.status) }}</span>
+        <span class="tool-dur" v-if="t.duration_ms != null">{{ t.duration_ms }}ms</span>
+      </div>
+    </div>
+
     <div class="answer" v-if="result">
       <p>{{ result.answer }}</p>
       <div v-if="result.citations?.length" class="citations">
@@ -23,24 +33,53 @@
 
 <script setup lang="ts">
 import { ref } from "vue";
-import { api } from "../api/client";
-import { ApiError } from "../api/client";
+import { postSSE } from "../api/sse";
+
+interface ToolCall {
+  tool: string;
+  name?: string;
+  server?: string | null;
+  status: string;
+  duration_ms?: number;
+}
 
 const question = ref("");
 const result = ref<any>(null);
+const toolCalls = ref<ToolCall[]>([]);
 const loading = ref(false);
 const error = ref("");
+
+function statusLabel(s: string) {
+  return { success: "成功", rejected: "被拒", error: "出错" }[s] || s;
+}
 
 async function ask() {
   if (!question.value.trim()) return;
   loading.value = true;
   error.value = "";
   result.value = null;
+  toolCalls.value = [];
   try {
-    const res = await api.post("/qa/ask", { question: question.value });
-    result.value = res.data;
-  } catch (e) {
-    error.value = e instanceof ApiError ? e.message : "提问失败";
+    await postSSE("/qa/ask", { question: question.value }, {
+      onEvent: (event, data) => {
+        if (event === "tool") {
+          toolCalls.value.push(data as ToolCall);
+        } else if (event === "meta") {
+          // canonical list from the server
+          toolCalls.value = (data?.tool_calls || []) as ToolCall[];
+        } else if (event === "data") {
+          result.value = data;
+        }
+      },
+      onError: (_code, message) => {
+        error.value = message || "提问失败";
+      },
+      onDone: () => {
+        loading.value = false;
+      },
+    });
+  } catch {
+    error.value = "提问失败";
   } finally {
     loading.value = false;
   }
@@ -53,6 +92,15 @@ h2 { font-size: var(--text-lg); margin-bottom: var(--space-4); }
 .ask-box { display: flex; gap: var(--space-2); margin-bottom: var(--space-4); }
 .q-input { flex: 1; padding: var(--space-3); border: 1px solid var(--color-border); border-radius: var(--radius); }
 .ask-btn { background: var(--color-primary); color: white; border: none; padding: var(--space-3) var(--space-6); border-radius: var(--radius); font-weight: 600; }
+.tool-calls { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius); padding: var(--space-3) var(--space-4); margin-bottom: var(--space-4); }
+.tool-calls h4 { font-size: var(--text-sm); margin-bottom: var(--space-2); color: var(--color-text-muted); }
+.tool-row { display: flex; align-items: center; gap: var(--space-2); font-size: var(--text-sm); margin-bottom: var(--space-1); }
+.tool-name { font-family: monospace; }
+.tool-status { padding: 1px 8px; border-radius: 999px; font-size: var(--text-xs); }
+.tool-status.success { background: #dcfce7; color: #166534; }
+.tool-status.rejected { background: #fef3c7; color: #92400e; }
+.tool-status.error { background: #fee2e2; color: #991b1b; }
+.tool-dur { color: var(--color-text-muted); font-size: var(--text-xs); }
 .answer { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius); padding: var(--space-4); }
 .citations { margin-top: var(--space-4); padding-top: var(--space-3); border-top: 1px solid var(--color-border); }
 .citation { font-size: var(--text-sm); margin-bottom: var(--space-2); }

@@ -15,11 +15,19 @@
             placeholder="待办标题"
             class="title-input"
           />
-          <input
-            v-model="c.deadline"
-            placeholder="截止时间 (ISO 或留空)"
-            class="deadline-input"
-          />
+          <label>日期<input type="date" v-model="c.date" @change="c.date_manually_edited = true" /></label>
+          <label>时间<input type="time" v-model="c.time" /></label>
+          <div v-if="c.date_basis && c.date_expression">
+            <label>{{ c.date_basis.source === 'source_text' ? '原文日期基准' : '按发送当天推算，待确认' }}（{{ c.date_basis.timezone }}）
+              <input type="date" v-model="c.date_basis.date" @change="rebaseCandidates(candidates, i)" />
+            </label>
+          </div>
+          <p v-if="c.warnings?.length">{{ c.warnings.join('；') }}</p>
+          <p v-if="c.source_text">原文：{{ c.source_text }}</p>
+          <label class="notes-field">注意事项
+            <textarea v-model="c.notes" rows="2" class="notes-input" placeholder="无"></textarea>
+          </label>
+          <label v-if="c.time && !c.date"><input type="checkbox" v-model="c.accept_no_deadline" />接受无截止日期</label>
           <button class="remove-btn" @click="removeCandidate(i)">删除</button>
         </div>
         <button class="add-btn" @click="addCandidate">+ 添加候选</button>
@@ -37,6 +45,7 @@
 
 <script setup lang="ts">
 import { ref, onMounted } from "vue";
+import { editableTime, timePayload, rebaseCandidates } from "../utils/time.mjs";
 import { useRoute, useRouter } from "vue-router";
 import { getNotification, confirmNotification, discardNotification, NotificationCandidate } from "../api/notifications";
 import { ApiError } from "../api/client";
@@ -65,7 +74,7 @@ async function confirm() {
   }
   loading.value = true;
   try {
-    await confirmNotification(route.params.id as string, valid);
+    await confirmNotification(route.params.id as string, valid.map(timePayload));
     router.push("/todos");
   } catch (e) {
     error.value = e instanceof ApiError ? e.message : "确认失败";
@@ -84,8 +93,8 @@ onMounted(async () => {
   notif.value = res.data;
   const cands = res.data?.candidates?.items || [];
   candidates.value = cands.map((c: any) => ({
+    ...editableTime(c),
     title: c.text || c.title || "",
-    deadline: c.deadline || null,
   }));
 });
 </script>
@@ -107,12 +116,15 @@ h2 { font-size: var(--text-lg); margin-bottom: var(--space-4); }
 }
 .pane h3 { font-size: var(--text-base); margin-bottom: var(--space-3); }
 pre { white-space: pre-wrap; font-size: var(--text-sm); }
-.source-tag { font-size: var(--text-xs); color: var(--color-text-muted); margin-top: var(--space-2); }
+.source-tag { font-size: var(--text-xs); color: var(--text-muted); margin-top: var(--space-2); }
+.notes-field { display: flex; flex-direction: column; gap: var(--space-1); width: 100%; font-size: var(--text-sm); color: var(--color-text-muted); }
+.notes-input { width: 100%; padding: var(--space-2); border: 1px solid var(--color-border); border-radius: var(--radius); font-size: var(--text-sm); resize: vertical; }
 .candidate {
   display: flex;
   gap: var(--space-2);
   margin-bottom: var(--space-2);
   align-items: center;
+  flex-wrap: wrap;
 }
 .title-input { flex: 1; padding: var(--space-2); border: 1px solid var(--color-border); border-radius: var(--radius); }
 .deadline-input { width: 180px; padding: var(--space-2); border: 1px solid var(--color-border); border-radius: var(--radius); }

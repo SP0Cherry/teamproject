@@ -6,7 +6,7 @@
         <input type="checkbox" :checked="t.status === 'done'" @change="toggle(t)" />
         <div class="todo-body">
           <div class="title">{{ t.title }}</div>
-          <div class="meta" v-if="t.due_at">{{ formatDate(t.due_at) }}</div>
+          <div class="meta">{{ formatTodoTime(t) }}</div>
         </div>
       </div>
     </div>
@@ -16,6 +16,7 @@
 
 <script setup lang="ts">
 import { ref, onMounted } from "vue";
+import { formatTodoTime } from "../utils/time.mjs";
 import { listTodos, completeTodo, restoreTodo, Todo } from "../api/todos";
 
 const todos = ref<Todo[]>([]);
@@ -28,11 +29,6 @@ async function toggle(t: Todo) {
     await completeTodo(t.id);
     t.status = "done";
   }
-}
-
-function formatDate(s: string) {
-  const d = new Date(s);
-  return d.toLocaleString("zh-CN", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
 onMounted(async () => {

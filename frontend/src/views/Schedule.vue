@@ -33,7 +33,7 @@
                 :class="{ done: t.status === 'done' }"
                 @click.stop="selectTodo(t)"
               >
-                <span class="todo-time" v-if="t.due_at">{{ formatTime(t.due_at) }}</span>
+                <span class="todo-time" v-if="t.due_at">{{ splitInstant(t.due_at, t.due_timezone).time }}</span>
                 <span class="todo-title">{{ t.title }}</span>
               </div>
             </div>
@@ -60,7 +60,7 @@
           <div class="todo-main">
             <div class="todo-title">{{ t.title }}</div>
             <div class="todo-meta">
-              <span v-if="t.due_at">{{ formatDateTime(t.due_at) }}</span>
+              <span>{{ formatTodoTime(t) }}</span>
               <span v-if="t.location" class="location">📍 {{ t.location }}</span>
             </div>
           </div>
@@ -74,7 +74,7 @@
         <h3>{{ selectedTodo.title }}</h3>
         <div class="detail-row">
           <span class="label">时间：</span>
-          <span>{{ selectedTodo.due_at ? formatDateTime(selectedTodo.due_at) : "未设置" }}</span>
+          <span>{{ formatTodoTime(selectedTodo) }}</span>
         </div>
         <div class="detail-row">
           <span class="label">地点：</span>
@@ -101,6 +101,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from "vue";
+import { splitInstant, dateKey, formatTodoTime } from "../utils/time.mjs";
 import { useRouter } from "vue-router";
 import { listTodos, completeTodo, restoreTodo, Todo } from "../api/todos";
 
@@ -113,7 +114,7 @@ const weekOffset = ref(0);
 const weekdays = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
 
 const weekDays = computed(() => {
-  const now = new Date();
+  const now = new Date(`${splitInstant(new Date().toISOString()).date}T12:00:00`);
   // Get Monday of current week
   const day = now.getDay() || 7; // Sunday = 0 → 7
   const monday = new Date(now);
@@ -144,7 +145,7 @@ function nextWeek() {
 }
 
 function isToday(day: Date) {
-  const now = new Date();
+  const now = new Date(`${splitInstant(new Date().toISOString()).date}T12:00:00`);
   return (
     day.getFullYear() === now.getFullYear() &&
     day.getMonth() === now.getMonth() &&
@@ -162,27 +163,8 @@ function selectDay(_day: Date) {
 }
 
 function getTodosForDay(day: Date) {
-  return todos.value.filter((t) => {
-    if (!t.due_at) return false;
-    const d = new Date(t.due_at);
-    // Compare using UTC to match backend storage
-    return (
-      d.getUTCFullYear() === day.getFullYear() &&
-      d.getUTCMonth() === day.getMonth() &&
-      d.getUTCDate() === day.getDate()
-    );
-  });
-}
-
-function formatTime(iso: string) {
-  const d = new Date(iso);
-  // Use UTC to match backend storage (no timezone offset)
-  return `${String(d.getUTCHours()).padStart(2, "0")}:${String(d.getUTCMinutes()).padStart(2, "0")}`;
-}
-
-function formatDateTime(iso: string) {
-  const d = new Date(iso);
-  return `${d.getUTCMonth() + 1}/${d.getUTCDate()} ${formatTime(iso)}`;
+  const key = day.getFullYear()+"-"+String(day.getMonth()+1).padStart(2,"0")+"-"+String(day.getDate()).padStart(2,"0");
+  return todos.value.filter(t => dateKey(t) === key);
 }
 
 function selectTodo(t: Todo) {

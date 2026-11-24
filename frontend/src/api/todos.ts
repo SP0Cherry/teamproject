@@ -6,12 +6,32 @@ export interface Todo {
   description: string | null;
   location: string | null;
   due_at: string | null;
+  due_date?: string | null;
+  due_precision?: "datetime" | "date" | "unknown";
+  due_timezone?: string;
+  date?: string | null;
+  time?: string | null;
+  date_expression?: string | null;
+  source_text?: string | null;
+  date_basis?: {date: string; timezone: string; source: string} | null;
+  warnings?: string[];
+  needs_confirmation?: boolean;
   status: "pending" | "done";
 }
 
 export interface TodoCandidate {
   title: string;
   due_at: string | null;
+  due_date?: string | null;
+  due_precision?: "datetime" | "date" | "unknown";
+  due_timezone?: string;
+  date?: string | null;
+  time?: string | null;
+  date_expression?: string | null;
+  source_text?: string | null;
+  date_basis?: {date: string; timezone: string; source: string} | null;
+  warnings?: string[];
+  needs_confirmation?: boolean;
   location: string | null;
   notes: string | null;
 }
@@ -42,6 +62,7 @@ export interface ParseResult {
   candidates: TodoCandidate[];
   parser: "llm" | "rule";
   extracted_text?: string;
+  degraded_reason?: string | null;
 }
 
 export async function parseTodosFromText(

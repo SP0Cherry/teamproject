@@ -10,17 +10,17 @@
 
     <section v-if="data?.overdue.length" class="group overdue">
       <h3>逾期</h3>
-      <div class="todo" v-for="t in data.overdue" :key="t.id">{{ t.title }}</div>
+      <div class="todo" v-for="t in data.overdue" :key="t.id">{{ t.title }} <span>{{ formatTodoTime(t) }}</span></div>
     </section>
 
     <section v-if="data?.today.length" class="group today">
       <h3>今日</h3>
-      <div class="todo" v-for="t in data.today" :key="t.id">{{ t.title }}</div>
+      <div class="todo" v-for="t in data.today" :key="t.id">{{ t.title }} <span>{{ formatTodoTime(t) }}</span></div>
     </section>
 
     <section v-if="data?.upcoming.length" class="group upcoming">
       <h3>未来七天</h3>
-      <div class="todo" v-for="t in data.upcoming" :key="t.id">{{ t.title }}</div>
+      <div class="todo" v-for="t in data.upcoming" :key="t.id">{{ t.title }} <span>{{ formatTodoTime(t) }}</span></div>
     </section>
 
     <p class="empty" v-if="data && !data.overdue.length && !data.today.length && !data.upcoming.length">
@@ -31,6 +31,7 @@
 
 <script setup lang="ts">
 import { ref, onMounted } from "vue";
+import { formatTodoTime, splitInstant } from "../utils/time.mjs";
 import { api } from "../api/client";
 
 const data = ref<any>(null);
@@ -47,7 +48,8 @@ async function load() {
 }
 
 function formatTime(s: string) {
-  return new Date(s).toLocaleString("zh-CN");
+  const value = splitInstant(s);
+  return `${value.date} ${value.time}`;
 }
 
 onMounted(load);
